@@ -132,21 +132,42 @@ Rscript install_packages.R
 check_status "R package installation"
 
 # =============================================================================
-# STEP 3: Extract Data (if needed)
+# STEP 3: Extract Data
 # =============================================================================
-print_step "3" "Extracting Data"
+print_step "3" "Extracting and Organizing Data"
 
-if [ ! -f "XTRIA_20250520_A00904_IL21602-001_PE2V4-B02_L003_R1.fastq.gz" ]; then
-    if [ -f "XTRIA.20250601_163957.ILLUMINA_DATA.1-of-1.tar" ]; then
-        echo "Extracting TAR file..."
-        tar -xf XTRIA.20250601_163957.ILLUMINA_DATA.1-of-1.tar
-        check_status "Data extraction"
+# Always extract to ensure we have the latest files
+if [ -f "XTRIA.20250601_163957.ILLUMINA_DATA.1-of-1.tar" ]; then
+    echo "Extracting TAR file..."
+    tar -xf XTRIA.20250601_163957.ILLUMINA_DATA.1-of-1.tar
+    check_status "Data extraction"
+    
+    echo "Files extracted. Checking structure..."
+    
+    # Check what was extracted
+    if [ -d "Electroporated" ] && [ -d "Notelectroporated" ]; then
+        echo "✓ Found sample directories"
+        
+        # List files in each directory
+        echo "Electroporated samples:"
+        ls -la Electroporated/*.fastq.gz 2>/dev/null | head -5
+        echo "Notelectroporated samples:"
+        ls -la Notelectroporated/*.fastq.gz 2>/dev/null | head -5
     else
-        echo -e "${RED}Error: Cannot find data files or TAR archive${NC}"
-        exit 1
+        # Files might be in main directory
+        echo "Checking for FASTQ files in main directory..."
+        ls -la *.fastq.gz 2>/dev/null | head -10
     fi
 else
-    echo "Data files already extracted"
+    echo -e "${RED}Error: Cannot find TAR archive${NC}"
+    exit 1
+fi
+
+# Copy mature.fa if it exists in main directory
+if [ -f "mature.fa" ] && [ ! -f "complete_analysis/4_mapping/mirbase/mature.fa" ]; then
+    echo "Found mature.fa in main directory, copying to analysis folder..."
+    mkdir -p complete_analysis/4_mapping/mirbase
+    cp mature.fa complete_analysis/4_mapping/mirbase/
 fi
 
 # =============================================================================
@@ -163,11 +184,25 @@ mkdir -p complete_analysis/{1_fastqc_raw,2_trimmed_reads,3_fastqc_trimmed,logs}
 
 # Run FastQC on raw data
 echo "Running FastQC on raw data..."
-for file in XTRIA_*_R[12].fastq.gz; do
-    if [ -f "$file" ] && [[ ! "$file" =~ "trimmed" ]]; then
-        fastqc -o complete_analysis/1_fastqc_raw -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_raw.log
-    fi
-done
+
+# Check both directory structures
+if [ -d "Electroporated" ] && [ -d "Notelectroporated" ]; then
+    # Files are in subdirectories
+    for dir in Electroporated Notelectroporated; do
+        for file in "$dir"/*R[12].fastq.gz; do
+            if [ -f "$file" ] && [[ ! "$file" =~ "trimmed" ]]; then
+                fastqc -o complete_analysis/1_fastqc_raw -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_raw.log
+            fi
+        done
+    done
+else
+    # Files are in main directory
+    for file in *R[12].fastq.gz; do
+        if [ -f "$file" ] && [[ ! "$file" =~ "trimmed" ]]; then
+            fastqc -o complete_analysis/1_fastqc_raw -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_raw.log
+        fi
+    done
+fi
 
 # Run MultiQC on raw data
 cd complete_analysis/1_fastqc_raw
@@ -182,15 +217,34 @@ cd ../..
 
 # Copy trimmed files to analysis directory
 echo "Organizing trimmed files..."
-cp *_trimmed.fastq.gz complete_analysis/2_trimmed_reads/ 2>/dev/null || true
+
+# Check both possible locations
+if [ -d "Electroporated" ] && [ -d "Notelectroporated" ]; then
+    cp Electroporated/*_trimmed.fastq.gz complete_analysis/2_trimmed_reads/ 2>/dev/null || true
+    cp Notelectroporated/*_trimmed.fastq.gz complete_analysis/2_trimmed_reads/ 2>/dev/null || true
+else
+    cp *_trimmed.fastq.gz complete_analysis/2_trimmed_reads/ 2>/dev/null || true
+fi
 
 # Run FastQC on trimmed data
 echo "Running FastQC on trimmed data..."
-for file in *_trimmed.fastq.gz; do
-    if [ -f "$file" ]; then
-        fastqc -o complete_analysis/3_fastqc_trimmed -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_trimmed.log
-    fi
-done
+
+# Check both directory structures
+if [ -d "Electroporated" ] && [ -d "Notelectroporated" ]; then
+    for dir in Electroporated Notelectroporated; do
+        for file in "$dir"/*_trimmed.fastq.gz; do
+            if [ -f "$file" ]; then
+                fastqc -o complete_analysis/3_fastqc_trimmed -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_trimmed.log
+            fi
+        done
+    done
+else
+    for file in *_trimmed.fastq.gz; do
+        if [ -f "$file" ]; then
+            fastqc -o complete_analysis/3_fastqc_trimmed -t 2 "$file" 2>&1 | tee -a complete_analysis/logs/fastqc_trimmed.log
+        fi
+    done
+fi
 
 # Run MultiQC on trimmed data
 cd complete_analysis/3_fastqc_trimmed
@@ -253,8 +307,6 @@ samples <- data.frame(
     SampleID = c("IL21602-001", "IL21603-001"),
     SampleName = c("Electroporated", "Notelectroporated"),
     Condition = c("Electroporated", "Notelectroporated"),
-    FileName_R1 = c("XTRIA_20250520_A00904_IL21602-001_PE2V4-B02_L003_R1.fastq.gz",
-                    "XTRIA_20250520_A00904_IL21603-001_PE2V4-C02_L003_R1.fastq.gz"),
     stringsAsFactors = FALSE
 )
 
@@ -268,18 +320,22 @@ dir.create(mapping_dir, showWarnings = FALSE)
 mirbase_dir <- file.path(mapping_dir, "mirbase")
 dir.create(mirbase_dir, showWarnings = FALSE)
 
-# Download miRBase
+# Check for mature.fa
 mirbase_fa <- file.path(mirbase_dir, "mature.fa")
 if (!file.exists(mirbase_fa)) {
-    progress("Downloading miRBase reference...")
-    download.file("https://www.mirbase.org/ftp/CURRENT/mature.fa.gz",
-                  paste0(mirbase_fa, ".gz"), quiet = TRUE)
-    system(paste0("gunzip '", mirbase_fa, ".gz'"))
+    if (file.exists("mature.fa")) {
+        progress("Using mature.fa from base directory")
+        file.copy("mature.fa", mirbase_fa)
+    } else {
+        stop("mature.fa not found")
+    }
 }
 
 # Extract human miRNAs
 human_mirna_fa <- file.path(mirbase_dir, "hsa_mature.fa")
-system(paste0("grep -A 1 '^>hsa-' '", mirbase_fa, "' | grep -v '^--$' > '", human_mirna_fa, "'"))
+if (!file.exists(human_mirna_fa)) {
+    system(paste0("grep -A 1 '^>hsa-' '", mirbase_fa, "' | grep -v '^--$' > '", human_mirna_fa, "'"))
+}
 
 # Build index
 progress("Building miRNA index")
@@ -292,17 +348,58 @@ if (!file.exists(file.path(index_dir, "index.00.b.tab"))) {
                indexSplit = FALSE)
 }
 
+# Find trimmed files
+progress("Looking for trimmed FASTQ files")
+
+# Function to find files
+find_trimmed_files <- function() {
+    # Based on your directory structure:
+    # Electroporated/ILLUMINA_DATA/XTRIA_20250520_A00904_IL21602-001_PE2V4-B02_L003_R1_trimmed.fastq.gz
+    # Notelectroporated/ILLUMINA_DATA/XTRIA_20250520_A00904_IL21603-001_PE2V4-C02_L003_R1_trimmed.fastq.gz
+    
+    electro_file <- "Electroporated/ILLUMINA_DATA/XTRIA_20250520_A00904_IL21602-001_PE2V4-B02_L003_R1_trimmed.fastq.gz"
+    notelectro_file <- "Notelectroporated/ILLUMINA_DATA/XTRIA_20250520_A00904_IL21603-001_PE2V4-C02_L003_R1_trimmed.fastq.gz"
+    
+    if (file.exists(electro_file) && file.exists(notelectro_file)) {
+        return(c(electro_file, notelectro_file))
+    }
+    
+    # Try recursive search if exact paths don't work
+    files1 <- list.files("Electroporated", pattern = "IL21602-001.*R1.*trimmed.*fastq.gz$", 
+                         full.names = TRUE, recursive = TRUE)
+    files2 <- list.files("Notelectroporated", pattern = "IL21603-001.*R1.*trimmed.*fastq.gz$", 
+                         full.names = TRUE, recursive = TRUE)
+    
+    if (length(files1) > 0 && length(files2) > 0) {
+        return(c(files1[1], files2[1]))
+    }
+    
+    # Last resort - find any R1 trimmed files
+    all_files <- list.files(".", pattern = "R1.*trimmed.*fastq.gz$", 
+                           full.names = TRUE, recursive = TRUE)
+    
+    if (length(all_files) >= 2) {
+        electro <- grep("IL21602-001", all_files, value = TRUE)[1]
+        notelectro <- grep("IL21603-001", all_files, value = TRUE)[1]
+        
+        if (!is.na(electro) && !is.na(notelectro)) {
+            return(c(electro, notelectro))
+        }
+    }
+    
+    stop("Could not find trimmed R1 files. Looking for files in Electroporated/ILLUMINA_DATA/ and Notelectroporated/ILLUMINA_DATA/")
+}
+
+trimmed_r1_files <- find_trimmed_files()
+progress(paste("Found files:", paste(basename(trimmed_r1_files), collapse = ", ")))
+
 # Perform alignment
 progress("Aligning reads to miRNA reference")
 bam_dir <- file.path(mapping_dir, "bam_files")
 dir.create(bam_dir, showWarnings = FALSE)
 
-trimmed_r1_files <- c(
-    "XTRIA_20250520_A00904_IL21602-001_PE2V4-B02_L003_R1_trimmed.fastq.gz",
-    "XTRIA_20250520_A00904_IL21603-001_PE2V4-C02_L003_R1_trimmed.fastq.gz"
-)
-
 alignment_stats <- data.frame()
+
 for (i in 1:length(trimmed_r1_files)) {
     sample_name <- samples$SampleID[i]
     progress(paste("Aligning", sample_name))
@@ -318,7 +415,7 @@ for (i in 1:length(trimmed_r1_files)) {
         nBestLocations = 1,
         minFragLength = 18,
         maxFragLength = 30,
-        nMismatch = 1
+        maxMismatches = 1
     )
     
     stats <- data.frame(
@@ -327,6 +424,7 @@ for (i in 1:length(trimmed_r1_files)) {
         Mapped_reads = align_result$Mapped_reads,
         Percent_mapped = round(align_result$Mapped_reads / align_result$Total_reads * 100, 2)
     )
+    
     alignment_stats <- rbind(alignment_stats, stats)
 }
 
@@ -413,7 +511,7 @@ dir.create(deg_dir, showWarnings = FALSE)
 
 # Estimate dispersion
 dge_filtered <- estimateCommonDisp(dge_filtered, verbose = FALSE)
-dge_filtered$common.dispersion <- 0.4  # Typical for miRNA-seq
+dge_filtered$common.dispersion <- 0.4
 
 # Perform exact test
 et <- exactTest(dge_filtered, pair = c("Notelectroporated", "Electroporated"))
