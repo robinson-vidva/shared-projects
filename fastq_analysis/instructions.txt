@@ -1,0 +1,42 @@
+SIMPLE INSTRUCTIONS TO RUN miRNA ANALYSIS
+=========================================
+
+WHAT THIS DOES:
+- Analyzes your Let-7-5p knockdown experiment
+- Compares electroporated vs control samples
+- Tells you if knockdown was successful
+
+HOW TO RUN:
+
+1. Open Terminal on your Mac
+
+2. Go to your data folder:
+   cd /Users/rvidva/Documents/datasets/XTRIA
+
+3. Copy the script (run_mirna_analysis.sh) to this folder
+
+4. Make it executable:
+   chmod +x run_mirna_analysis.sh
+
+5. Run it:
+   ./run_mirna_analysis.sh
+
+6. Wait about 10-15 minutes
+
+WHAT YOU'LL GET:
+- Excel file with all results
+- Percentage of Let-7-5p knockdown
+- Plots showing the changes
+- QC reports
+
+The script will:
+✓ Check if you have required tools
+✓ Install R packages automatically
+✓ Run the complete analysis
+✓ Tell you if knockdown was successful
+✓ Open the results folder when done
+
+RESULTS LOCATION:
+complete_analysis/complete_analysis_results.xlsx
+
+That's it! Just run the script and it does everything.
