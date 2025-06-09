@@ -404,28 +404,78 @@ for (i in 1:length(trimmed_r1_files)) {
     sample_name <- samples$SampleID[i]
     progress(paste("Aligning", sample_name))
     
+    # Check if file exists and is readable
+    if (!file.exists(trimmed_r1_files[i])) {
+        stop(paste("File not found:", trimmed_r1_files[i]))
+    }
+    
+    progress(paste("File size:", file.size(trimmed_r1_files[i]), "bytes"))
+    
     bam_file <- file.path(bam_dir, paste0(sample_name, ".bam"))
     
-    align_result <- align(
-        index = file.path(index_dir, "index"),
-        readfile1 = trimmed_r1_files[i],
-        output_file = bam_file,
-        nthreads = 4,
-        unique = TRUE,
-        nBestLocations = 1,
-        minFragLength = 18,
-        maxFragLength = 30,
-        maxMismatches = 1
-    )
-    
-    stats <- data.frame(
-        Sample = sample_name,
-        Total_reads = align_result$Total_reads,
-        Mapped_reads = align_result$Mapped_reads,
-        Percent_mapped = round(align_result$Mapped_reads / align_result$Total_reads * 100, 2)
-    )
-    
-    alignment_stats <- rbind(alignment_stats, stats)
+    # Try alignment with error handling
+    tryCatch({
+        align_result <- align(
+            index = file.path(index_dir, "index"),
+            readfile1 = trimmed_r1_files[i],
+            output_file = bam_file,
+            nthreads = 2,  # Reduced threads
+            unique = TRUE,
+            nBestLocations = 1,
+            minFragLength = 15,  # Slightly more permissive
+            maxFragLength = 35,  # Slightly more permissive
+            maxMismatches = 2    # Allow more mismatches
+        )
+        
+        # Check if alignment succeeded
+        if (is.null(align_result) || !is.list(align_result)) {
+            stop("Alignment failed - no results returned")
+        }
+        
+        # Print alignment summary
+        cat("\nAlignment summary for", sample_name, ":\n")
+        print(str(align_result))
+        
+        # Extract stats safely
+        total_reads <- ifelse(!is.null(align_result$Total_reads), 
+                             align_result$Total_reads, 0)
+        mapped_reads <- ifelse(!is.null(align_result$Mapped_reads), 
+                              align_result$Mapped_reads, 0)
+        
+        stats <- data.frame(
+            Sample = sample_name,
+            Total_reads = total_reads,
+            Mapped_reads = mapped_reads,
+            Percent_mapped = ifelse(total_reads > 0, 
+                                  round(mapped_reads / total_reads * 100, 2), 
+                                  0)
+        )
+        
+        alignment_stats <- rbind(alignment_stats, stats)
+        
+    }, error = function(e) {
+        cat("\nError during alignment of", sample_name, ":\n")
+        cat(e$message, "\n")
+        
+        # Try to continue with zero stats
+        stats <- data.frame(
+            Sample = sample_name,
+            Total_reads = 0,
+            Mapped_reads = 0,
+            Percent_mapped = 0
+        )
+        alignment_stats <<- rbind(alignment_stats, stats)
+    })
+}
+
+# Check if we got any successful alignments
+if (nrow(alignment_stats) == 0 || all(alignment_stats$Mapped_reads == 0)) {
+    cat("\nWARNING: No reads mapped successfully.\n")
+    cat("This might indicate:\n")
+    cat("1. The reads are not miRNA sequences\n")
+    cat("2. The reads are from a different species\n")
+    cat("3. Quality issues with the reads\n")
+    cat("\nProceeding with analysis anyway...\n")
 }
 
 # =============================================================================
@@ -488,12 +538,20 @@ progress("Performing normalization and differential expression")
 norm_dir <- file.path(output_dir, "6_normalization")
 dir.create(norm_dir, showWarnings = FALSE)
 
-# Create DGEList
-dge <- DGEList(counts = counts, samples = samples)
+# Create DGEList with proper group information
+group <- factor(samples$Condition)
+dge <- DGEList(counts = counts, group = group, samples = samples)
 
 # Filter lowly expressed
 keep <- rowSums(counts >= 10) >= 1
-dge_filtered <- dge[keep, ]
+dge_filtered <- dge[keep, , keep.lib.sizes = FALSE]
+
+# Check if we have any genes left
+if (nrow(dge_filtered) == 0) {
+    cat("\nWARNING: No miRNAs passed filtering. Reducing threshold...\n")
+    keep <- rowSums(counts >= 5) >= 1
+    dge_filtered <- dge[keep, , keep.lib.sizes = FALSE]
+}
 
 # Calculate normalization factors
 dge_filtered <- calcNormFactors(dge_filtered, method = "TMM")
@@ -509,12 +567,33 @@ write.csv(cpm_values, file.path(norm_dir, "normalized_cpm.csv"))
 deg_dir <- file.path(output_dir, "7_differential_expression")
 dir.create(deg_dir, showWarnings = FALSE)
 
-# Estimate dispersion
+# Since we only have 2 samples (no replicates), we need to handle this specially
+cat("\nNOTE: Only 2 samples without replicates. Results should be interpreted with caution.\n")
+
+# Set a reasonable dispersion value for miRNA-seq without replicates
+bcv <- 0.4  # Typical biological coefficient of variation for miRNA-seq
 dge_filtered <- estimateCommonDisp(dge_filtered, verbose = FALSE)
-dge_filtered$common.dispersion <- 0.4
+
+# If dispersion estimation failed, set it manually
+if (is.na(dge_filtered$common.dispersion)) {
+    dge_filtered$common.dispersion <- bcv^2
+    cat("Using assumed dispersion:", dge_filtered$common.dispersion, "\n")
+}
 
 # Perform exact test
-et <- exactTest(dge_filtered, pair = c("Notelectroporated", "Electroporated"))
+# Make sure we're using the correct group names
+group_names <- levels(dge_filtered$samples$group)
+cat("Groups found:", paste(group_names, collapse = ", "), "\n")
+
+# Perform the test
+if (length(group_names) >= 2) {
+    et <- exactTest(dge_filtered, pair = group_names[c(2, 1)])  # Control vs Treatment
+} else {
+    # If groups aren't set properly, try to set them
+    dge_filtered$samples$group <- factor(c("Notelectroporated", "Electroporated"))
+    et <- exactTest(dge_filtered, dispersion = bcv^2)
+}
+
 top_tags <- topTags(et, n = Inf)
 
 # Process results
